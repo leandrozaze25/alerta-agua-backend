@@ -5,6 +5,7 @@ import threading
 from flask import Flask, jsonify
 import firebase_admin
 from firebase_admin import credentials, messaging
+import os # Importamos o módulo 'os'
 
 # --- CONFIGURAÇÕES ---
 URL_API_SANEPAR = "https://sgcb2b.sanepar.com.br/saneparmobile/ServiceFaltaDAgua.svc/webhttp/GetFaltaDAgua/51b27bf3-acec-4861-b80c-254a2a2d52d1/daced9a77c753388"
@@ -15,14 +16,21 @@ INTERVALO_DE_VERIFICACAO_SEGUNDOS = 1800 # 30 minutos
 TOKEN_DO_DISPOSITIVO_ALVO = "ff8MLprNSxefrMYN6a0elg:APA91bFjsTJ0zQT_GoQnTb5XMT7dF5rhHfyF0RltLi5gWWNVIv74SwcEZ9BZs081XH1_L4AhuFIu4Cw5awgI_5zwVCTXBq6O2yDs3z0bfAsM3eTui40CHv4" # O TEU TOKEN REAL AQUI
 
 # --- CONFIGURAÇÃO DO FIREBASE ---
+# O Render coloca os ficheiros secretos num caminho padrão.
+# O nosso código agora vai procurar a chave neste local.
+CAMINHO_DA_CHAVE_SECRETA = '/etc/secrets/serviceAccountKey.json'
+
 try:
-    cred = credentials.Certificate("serviceAccountKey.json")
+    cred = credentials.Certificate(CAMINHO_DA_CHAVE_SECRETA)
     firebase_admin.initialize_app(cred)
-    print("FIREBASE: SDK Admin inicializado com sucesso!")
+    print("FIREBASE: SDK Admin inicializado com sucesso a partir do ficheiro secreto!")
 except Exception as e:
     print(f"FIREBASE: ERRO ao inicializar o SDK Admin - {e}")
+    print("FIRE"
+"BASE: Verifique se o ficheiro secreto 'serviceAccountKey.json' foi adicionado no ambiente do Render.")
 
-# --- LÓGICA DO SERVIDOR ---
+# --- O RESTO DO CÓDIGO PERMANECE IGUAL ---
+
 app = Flask(__name__)
 ultimo_status_conhecido = {}
 lock = threading.Lock()
@@ -54,7 +62,6 @@ def verificar_sanepar():
                     if not ultimo_status_conhecido or mensagem_nova != mensagem_antiga:
                         print(f"!!! MUDANÇA DETETADA: De '{mensagem_antiga}' para '{mensagem_nova}' !!!")
                         ultimo_status_conhecido = novo_status
-                        # Não envia notificação na primeira vez, apenas guarda o estado
                         if mensagem_antiga:
                             enviar_notificacao_fcm("Alerta de Água SJP", f"Novo status: {mensagem_nova}")
                     else:
@@ -63,7 +70,6 @@ def verificar_sanepar():
                 print(f"VIGIANDO: Erro ao contactar Sanepar. Código: {resposta.status_code}")
         except Exception as e:
             print(f"VIGIANDO: Erro de rede: {e}")
-
         time.sleep(INTERVALO_DE_VERIFICACAO_SEGUNDOS)
 
 @app.route('/status_agua')
@@ -78,6 +84,5 @@ def get_status_agua():
 def health_check():
     return "Servidor Alerta de Água SJP está no ar!"
 
-# Inicia o vigia numa thread separada quando o servidor começa
 vigia_thread = threading.Thread(target=verificar_sanepar, daemon=True)
 vigia_thread.start()
