@@ -1,88 +1,38 @@
-import requests
-import json
-import time
-import threading
 from flask import Flask, jsonify
-import firebase_admin
-from firebase_admin import credentials, messaging
-import os # Importamos o módulo 'os'
+import os
+import redis
+import json
 
 # --- CONFIGURAÇÕES ---
-URL_API_SANEPAR = "https://sgcb2b.sanepar.com.br/saneparmobile/ServiceFaltaDAgua.svc/webhttp/GetFaltaDAgua/51b27bf3-acec-4861-b80c-254a2a2d52d1/daced9a77c753388"
-HEADERS = {'User-Agent': 'Mozilla/5.0'}
-INTERVALO_DE_VERIFICACAO_SEGUNDOS = 1800 # 30 minutos
+REDIS_URL = os.getenv('REDIS_URL')
+REDIS_CHAVE_STATUS = "sanepar_status_atual"
 
-# !!! IMPORTANTE: Substitui este token pelo token REAL do teu dispositivo S20
-TOKEN_DO_DISPOSITIVO_ALVO = "ff8MLprNSxefrMYN6a0elg:APA91bFjsTJ0zQT_GoQnTb5XMT7dF5rhHfyF0RltLi5gWWNVIv74SwcEZ9BZs081XH1_L4AhuFIu4Cw5awgI_5zwVCTXBq6O2yDs3z0bfAsM3eTui40CHv4" # O TEU TOKEN REAL AQUI
-
-# --- CONFIGURAÇÃO DO FIREBASE ---
-# O Render coloca os ficheiros secretos num caminho padrão.
-# O nosso código agora vai procurar a chave neste local.
-CAMINHO_DA_CHAVE_SECRETA = '/etc/secrets/serviceAccountKey.json'
-
+# --- Conexão com o Redis ---
 try:
-    cred = credentials.Certificate(CAMINHO_DA_CHAVE_SECRETA)
-    firebase_admin.initialize_app(cred)
-    print("FIREBASE: SDK Admin inicializado com sucesso a partir do ficheiro secreto!")
+    cliente_redis = redis.from_url(REDIS_URL, decode_responses=True)
+    cliente_redis.ping()
+    print("API_REDIS: Conexão com Redis bem-sucedida!")
 except Exception as e:
-    print(f"FIREBASE: ERRO ao inicializar o SDK Admin - {e}")
-    print("FIRE"
-"BASE: Verifique se o ficheiro secreto 'serviceAccountKey.json' foi adicionado no ambiente do Render.")
+    print(f"API_REDIS: ERRO de conexão com Redis: {e}")
+    cliente_redis = None
 
-# --- O RESTO DO CÓDIGO PERMANECE IGUAL ---
-
+# Cria a aplicação Flask
 app = Flask(__name__)
-ultimo_status_conhecido = {}
-lock = threading.Lock()
-
-def enviar_notificacao_fcm(titulo, corpo):
-    if not firebase_admin._apps: return
-    print(f"FCM: A tentar enviar notificação: '{titulo}'")
-    try:
-        message = messaging.Message(
-            notification=messaging.Notification(title=titulo, body=corpo),
-            token=TOKEN_DO_DISPOSITIVO_ALVO,
-        )
-        response = messaging.send(message)
-        print(f"FCM: Mensagem enviada com sucesso: {response}")
-    except Exception as e:
-        print(f"FCM: Erro ao enviar mensagem: {e}")
-
-def verificar_sanepar():
-    global ultimo_status_conhecido
-    while True:
-        print("VIGIANDO: Buscando status na Sanepar...")
-        try:
-            resposta = requests.get(URL_API_SANEPAR, headers=HEADERS, timeout=15)
-            if resposta.status_code == 200:
-                novo_status = resposta.json()
-                mensagem_nova = novo_status.get("Mensagem", "")
-                with lock:
-                    mensagem_antiga = ultimo_status_conhecido.get("Mensagem", "")
-                    if not ultimo_status_conhecido or mensagem_nova != mensagem_antiga:
-                        print(f"!!! MUDANÇA DETETADA: De '{mensagem_antiga}' para '{mensagem_nova}' !!!")
-                        ultimo_status_conhecido = novo_status
-                        if mensagem_antiga:
-                            enviar_notificacao_fcm("Alerta de Água SJP", f"Novo status: {mensagem_nova}")
-                    else:
-                        print("VIGIANDO: Status inalterado.")
-            else:
-                print(f"VIGIANDO: Erro ao contactar Sanepar. Código: {resposta.status_code}")
-        except Exception as e:
-            print(f"VIGIANDO: Erro de rede: {e}")
-        time.sleep(INTERVALO_DE_VERIFICACAO_SEGUNDOS)
 
 @app.route('/status_agua')
 def get_status_agua():
-    print("APP_REQUEST: Pedido recebido.")
-    with lock:
-        if not ultimo_status_conhecido:
-            return jsonify({"Mensagem": "Servidor a iniciar, aguarde a primeira verificação."})
-        return jsonify(ultimo_status_conhecido)
+    if not cliente_redis:
+        return jsonify({"erro": "Serviço indisponível - não foi possível conectar à base de dados."}), 503
+
+    status_guardado_json = cliente_redis.get(REDIS_CHAVE_STATUS)
+
+    if status_guardado_json:
+        # Retorna os dados que o vigia guardou
+        return jsonify(json.loads(status_guardado_json))
+    else:
+        # Se o vigia ainda não guardou nada
+        return jsonify({"Mensagem": "A aguardar a primeira verificação do sistema de monitorização."})
 
 @app.route('/')
-def health_check():
-    return "Servidor Alerta de Água SJP está no ar!"
-
-vigia_thread = threading.Thread(target=verificar_sanepar, daemon=True)
-vigia_thread.start()
+def pagina_principal():
+    return "<h1>Servidor Alerta de Água SJP no ar!</h1>"
